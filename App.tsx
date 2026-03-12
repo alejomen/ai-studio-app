@@ -1,252 +1,264 @@
+import React, { useMemo, useState } from 'react';
 
-import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react';
-import { Scene3D } from './components/Scene3D';
-import { Sidebar } from './components/Sidebar';
-import { ProductModal } from './components/ProductModal';
-import { ConfigState, LayoutType, MountingType, PlacedLamp, PRICING, LampType, EnvironmentType, TrackSystemConfig, EnvironmentObject, EnvObjectType } from './types';
-import * as THREE from 'three';
+type OperationType = 'Bv' | 'Bh' | 'Bg' | 'CutX' | 'CutY' | 'Rout' | 'Pock' | 'Unknown';
 
-const LOGO_URL = "https://firebasestorage.googleapis.com/v0/b/clase-22b0d.appspot.com/o/Logo%20EOS.png?alt=media&token=81387693-02f3-424a-939e-4054a1a5b481";
+interface ParsedOperation {
+  id: string;
+  type: OperationType;
+  rawLine: string;
+  params: Record<string, number | string>;
+}
 
-const DEFAULT_HOME: EnvironmentObject[] = [
-  { id: 'h1', type: 'sofa', position: [0, 0, -2.5], rotation: [0, 0, 0] },
-  { id: 'h2', type: 'coffeeTable', position: [0, 0, -1], rotation: [0, 0, 0] },
-  { id: 'h3', type: 'sideboard', position: [2.5, 0, -2.5], rotation: [0, -Math.PI / 2, 0] },
-  { id: 'h4', type: 'loungeChair', position: [-2, 0, -1.5], rotation: [0, Math.PI / 4, 0] }
-];
+interface NormalizedProgram {
+  panel: { x: number; y: number; z: number };
+  operations: ParsedOperation[];
+  unsupported: ParsedOperation[];
+}
 
-const DEFAULT_OFFICE: EnvironmentObject[] = [
-  { id: 'o1', type: 'officeTable', position: [0, 0, 0], rotation: [0, 0, 0] },
-  { id: 'o2', type: 'officeTable', position: [2.5, 0, 0], rotation: [0, 0, 0] },
-  { id: 'o3', type: 'bookshelf', position: [0, 0, -3], rotation: [0, 0, 0] },
-  { id: 'o4', type: 'lowCabinet', position: [-2.5, 0, 0], rotation: [0, Math.PI / 2, 0] }
-];
+const DEFAULT_MAPPINGS: Record<Exclude<OperationType, 'Unknown'>, string> = {
+  Bv: 'WW_DrillVertical',
+  Bh: 'WW_DrillHorizontal',
+  Bg: 'WW_DrillGeneric',
+  CutX: 'WW_GrooveX',
+  CutY: 'WW_GrooveY',
+  Rout: 'WW_Route2D',
+  Pock: 'WW_Pocket'
+};
 
-const App: React.FC = () => {
-  const initialSystemId = Math.random().toString(36).substr(2, 9);
-  const [config, setConfig] = useState<ConfigState>({
-    environmentType: EnvironmentType.HOME,
-    ceilingHeight: 3,
-    suspensionHeight: 0.6,
-    systems: [{
-      id: initialSystemId,
-      layout: LayoutType.LINEAR,
-      mounting: MountingType.SUSPENDIDO,
-      width: 3,
-      depth: 2,
-      position: [0, 0, 0],
-      rotation: 0,
-      lamps: []
-    }],
-    selectedSystemId: initialSystemId,
-    selectedObjectId: null,
-    includeInstallation: false,
-    includeShipping: false,
-    showEnvironment: true,
-    envObjects: [...DEFAULT_HOME]
+const EXAMPLE_BPP = `PAN=720
+LARG=480
+ESP=15
+BV(X=32,Y=50,DP=12,DIA=5)
+BH(X=700,Y=240,Z=7.5,DP=30,DIA=8)
+BG(X=200,Y=200,AZ=45,DP=10,DIA=5)
+CUT_X(Y=20,X0=0,X1=720,DP=4)
+ROUT(X=10,Y=10,X1=710,Y1=470,DP=2)
+POCK(X=50,Y=80,L=120,W=60,DP=4)`;
+
+const MACHINING_PREFIXES = ['BV', 'BH', 'BG', 'CUT_X', 'CUTY', 'CUT_Y', 'CUTX', 'ROUT', 'POCK'];
+
+const parseNumber = (value: string): number | string => {
+  const n = Number(value.trim().replace(',', '.'));
+  return Number.isFinite(n) ? n : value.trim();
+};
+
+const extractParams = (line: string): Record<string, number | string> => {
+  const params: Record<string, number | string> = {};
+  const keyValueRegex = /([A-Za-z][A-Za-z0-9_]*)\s*=\s*([^,;\]\)]+)/g;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = keyValueRegex.exec(line)) !== null) {
+    params[match[1].toUpperCase()] = parseNumber(match[2]);
+  }
+
+  if (Object.keys(params).length > 0) return params;
+
+  const argsMatch = line.match(/\(([^)]*)\)/);
+  if (!argsMatch) return params;
+
+  argsMatch[1]
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach((value, index) => {
+      params[`ARG${index + 1}`] = parseNumber(value);
+    });
+
+  return params;
+};
+
+const detectType = (line: string): OperationType => {
+  const normalized = line.toUpperCase();
+  if (/\bBV\b/.test(normalized)) return 'Bv';
+  if (/\bBH\b/.test(normalized)) return 'Bh';
+  if (/\bBG\b/.test(normalized)) return 'Bg';
+  if (normalized.includes('CUT_X') || normalized.includes('CUTX')) return 'CutX';
+  if (normalized.includes('CUT_Y') || normalized.includes('CUTY')) return 'CutY';
+  if (normalized.includes('ROUT')) return 'Rout';
+  if (normalized.includes('POCK')) return 'Pock';
+  return 'Unknown';
+};
+
+const normalizeInputLines = (source: string): string[] =>
+  source
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('//') && !line.startsWith(';'));
+
+const getPanelValue = (source: string, keys: string[]): number => {
+  for (const key of keys) {
+    const byEquals = source.match(new RegExp(`${key}\\s*=\\s*(-?\\d+(?:[\\.,]\\d+)?)`, 'i'));
+    if (byEquals?.[1]) return Number(byEquals[1].replace(',', '.'));
+
+    const byBracket = source.match(new RegExp(`${key}\\s*\\[\\s*(-?\\d+(?:[\\.,]\\d+)?)\\s*\\]`, 'i'));
+    if (byBracket?.[1]) return Number(byBracket[1].replace(',', '.'));
+  }
+  return 0;
+};
+
+const parseBpp = (source: string): NormalizedProgram => {
+  const lines = normalizeInputLines(source);
+  const panel = {
+    x: getPanelValue(source, ['PAN', 'LPX', 'DIMX']),
+    y: getPanelValue(source, ['LARG', 'LPY', 'DIMY']),
+    z: getPanelValue(source, ['ESP', 'LPZ', 'DIMZ'])
+  };
+
+  const operationLines = lines.filter((line) => {
+    const upper = line.toUpperCase();
+    return MACHINING_PREFIXES.some((prefix) => upper.includes(prefix));
   });
 
-  const [history, setHistory] = useState<ConfigState[]>([]);
-  const [deleteMode, setDeleteMode] = useState(false);
-  const [activeLampType, setActiveLampType] = useState<LampType | null>(null);
-  const [selectedProduct, setSelectedProduct] = useState<LampType | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sceneGroupRef = useRef<THREE.Group>(null);
+  const operations: ParsedOperation[] = operationLines.map((line, index) => ({
+    id: `op-${index + 1}`,
+    type: detectType(line),
+    rawLine: line,
+    params: extractParams(line)
+  }));
 
-  const saveHistory = useCallback((newState: ConfigState) => {
-    setHistory(prev => {
-      const last = prev[prev.length - 1];
-      if (JSON.stringify(last) === JSON.stringify(newState)) return prev;
-      return [...prev.slice(-19), newState];
-    });
-  }, []);
+  const unsupported = operations.filter((op) => op.type === 'Unknown');
+  return { panel, operations, unsupported };
+};
 
-  const handleUndo = () => {
-    if (history.length > 0) {
-      const prev = history[history.length - 1];
-      setHistory(h => h.slice(0, -1));
-      setConfig(prev);
-    }
-  };
+const formatParams = (params: Record<string, number | string>): string =>
+  Object.entries(params)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
 
-  const updateConfig = (key: keyof ConfigState, value: any) => {
-    saveHistory(config);
-    setConfig(prev => ({ ...prev, [key]: value }));
-  };
+const buildMpr = (program: NormalizedProgram, mappings: Record<Exclude<OperationType, 'Unknown'>, string>): string => {
+  const header = ['[H]', `PAN=${program.panel.x}`, `LARG=${program.panel.y}`, `ESP=${program.panel.z}`, "MACHINE='BHX50'", ''];
 
-  const toggleEnvironment = () => {
-    saveHistory(config);
-    setConfig(prev => ({ ...prev, showEnvironment: !prev.showEnvironment }));
-  };
-
-  const handleEnvironmentTypeChange = (type: EnvironmentType) => {
-    saveHistory(config);
-    setConfig(prev => ({
-      ...prev,
-      environmentType: type,
-      selectedObjectId: null,
-      envObjects: type === EnvironmentType.HOME ? [...DEFAULT_HOME] : [...DEFAULT_OFFICE]
-    }));
-  };
-
-  const quoteData = useMemo(() => {
-    let totalRailLength = 0;
-    let totalCorners = 0;
-    let totalSpots = 0;
-    let totalRacks = 0;
-
-    config.systems.forEach(sys => {
-      let l = 0; let c = 0;
-      switch (sys.layout) {
-        case LayoutType.LINEAR: l = sys.width; c = 0; break;
-        case LayoutType.RECTANGULAR: l = (sys.width * 2) + (sys.depth * 2); c = 4; break;
-        case LayoutType.L_SHAPE: l = sys.width + sys.depth; c = 1; break;
-        case LayoutType.U_SHAPE: l = (sys.width * 2) + sys.depth; c = 2; break;
-      }
-      totalRailLength += l; totalCorners += c;
-      totalSpots += sys.lamps.filter(lamp => lamp.type === LampType.SPOT_DIRECTIONAL).length;
-      totalRacks += sys.lamps.filter(lamp => lamp.type === LampType.FIXED_RACK).length;
+  const body = program.operations
+    .filter((op): op is ParsedOperation & { type: Exclude<OperationType, 'Unknown'> } => op.type !== 'Unknown')
+    .map((op, index) => {
+      const macro = mappings[op.type] || 'UNMAPPED';
+      return [`[OP${index + 1}]`, `TYPE=${macro}`, formatParams(op.params) || 'ARGS=', `SRC=${op.rawLine}`, ''].join('\n');
     });
 
-    const railSegments = Math.ceil(totalRailLength / 2);
-    const railCost = railSegments * PRICING.RAIL_KIT_2M;
-    const cornersCost = totalCorners * PRICING.CORNER_PIECE;
-    const spotsCost = totalSpots * PRICING.SPOT_DIRECTIONAL;
-    const racksCost = totalRacks * PRICING.FIXED_RACK;
-    const installationCost = config.includeInstallation ? PRICING.INSTALLATION_BASE + ((totalSpots + totalRacks) * PRICING.INSTALLATION_PER_ITEM) : 0;
-    const shippingCost = config.includeShipping ? PRICING.SHIPPING : 0;
+  return [...header, ...body, '[END]'].join('\n');
+};
 
-    return {
-      railSegments, railCost, cornerCount: totalCorners, cornersCost, spotCount: totalSpots, spotsCost, rackCount: totalRacks, racksCost,
-      installationCost, shippingCost, total: railCost + cornersCost + spotsCost + racksCost + installationCost + shippingCost
-    };
-  }, [config]);
+const card: React.CSSProperties = { border: '1px solid #d4d4d8', borderRadius: 12, padding: 16, background: '#fff' };
 
-  const updateSystemPosition = (id: string, newPos: [number, number, number]) => {
-    setConfig(prev => ({ 
-      ...prev, 
-      systems: prev.systems.map(s => s.id === id ? { ...s, position: newPos } : s) 
-    }));
+const App: React.FC = () => {
+  const [rawBpp, setRawBpp] = useState('');
+  const [fileName, setFileName] = useState('');
+  const [mappings, setMappings] = useState(DEFAULT_MAPPINGS);
+
+  const parsed = useMemo(() => parseBpp(rawBpp), [rawBpp]);
+  const generatedMpr = useMemo(() => buildMpr(parsed, mappings), [parsed, mappings]);
+
+  const status = useMemo(() => {
+    if (!rawBpp.trim()) return 'Pegá/cargá un .bpp para empezar.';
+    if (parsed.operations.length === 0) return 'No se detectaron operaciones del set MVP (BV/BH/BG/CUT/ROUT/POCK).';
+    return `OK: ${parsed.operations.length} operaciones detectadas (${parsed.unsupported.length} sin mapping).`;
+  }, [rawBpp, parsed]);
+
+  const handleFile = async (file: File | null) => {
+    if (!file) return;
+    const text = await file.text();
+    setRawBpp(text);
+    setFileName(file.name);
   };
 
-  const updateObjectPosition = (id: string, newPos: [number, number, number]) => {
-    setConfig(prev => ({ 
-      ...prev, 
-      envObjects: prev.envObjects.map(o => o.id === id ? { ...o, position: [newPos[0], o.position[1], newPos[2]] } : o) 
-    }));
-  };
-
-  const deleteObject = (id: string) => {
-    saveHistory(config);
-    setConfig(prev => ({
-      ...prev,
-      envObjects: prev.envObjects.filter(o => o.id !== id),
-      selectedObjectId: prev.selectedObjectId === id ? null : prev.selectedObjectId
-    }));
-  };
-
-  const rotateObject = (id: string) => {
-    saveHistory(config);
-    setConfig(prev => ({
-      ...prev,
-      envObjects: prev.envObjects.map(o => o.id === id ? { ...o, rotation: [o.rotation[0], o.rotation[1] + Math.PI / 2, o.rotation[2]] } : o)
-    }));
-  };
-
-  const addLamp = useCallback((type: LampType, systemId: string, trackIndex: number, position: number) => {
-    saveHistory(config);
-    const newLamp: PlacedLamp = {
-      id: Math.random().toString(36).substr(2, 9),
-      type, trackIndex, position,
-      rotation: type === LampType.SPOT_DIRECTIONAL ? (Math.random() - 0.5) * 2 * Math.PI : 0
-    };
-    setConfig(prev => ({
-      ...prev,
-      systems: prev.systems.map(sys => sys.id === systemId ? { ...sys, lamps: [...sys.lamps, newLamp] } : sys)
-    }));
-  }, [config, saveHistory]);
-
-  const removeLamp = useCallback((systemId: string, lampId: string) => {
-    saveHistory(config);
-    setConfig(prev => ({
-      ...prev,
-      systems: prev.systems.map(sys => sys.id === systemId ? { ...sys, lamps: sys.lamps.filter(l => l.id !== lampId) } : sys)
-    }));
-  }, [config, saveHistory]);
-
-  const cloneObject = (id: string) => {
-    saveHistory(config);
-    const obj = config.envObjects.find(o => o.id === id);
-    if (!obj) return;
-    const newObj: EnvironmentObject = {
-      ...obj,
-      id: Math.random().toString(36).substr(2, 9),
-      position: [obj.position[0] + 0.5, obj.position[1], obj.position[2] + 0.5]
-    };
-    setConfig(prev => ({ ...prev, envObjects: [...prev.envObjects, newObj] }));
-  };
-
-  const handleExport3D = async () => {
-    if (!sceneGroupRef.current) return;
-    const { ColladaExporter } = await import('three/examples/jsm/exporters/ColladaExporter.js');
-    const exporter = new ColladaExporter();
-    exporter.parse(sceneGroupRef.current, (result) => {
-      const blob = new Blob([result.data], { type: 'text/xml' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `eos_iluminacion_3d.dae`;
-      link.click();
-    }, { version: '1.4.1' });
+  const exportMpr = () => {
+    if (!rawBpp.trim()) return;
+    const blob = new Blob([generatedMpr], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${fileName.replace(/\.bpp$/i, '') || 'pieza'}_bhx50.mpr`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="flex h-screen w-full bg-white text-gray-900 overflow-hidden relative">
-      <div className="flex-1 relative cursor-crosshair">
-        <Scene3D 
-          config={config} 
-          activeLampType={activeLampType}
-          onPlaceLamp={addLamp}
-          onRemoveLamp={removeLamp}
-          canvasRef={canvasRef}
-          sceneGroupRef={sceneGroupRef}
-          onUpdateSystemPos={updateSystemPosition}
-          onUpdateObjectPos={updateObjectPosition}
-          onCloneObject={cloneObject}
-          onDeleteObject={deleteObject}
-          onSelectObject={(id) => setConfig(prev => ({ ...prev, selectedObjectId: id }))}
-          deleteMode={deleteMode}
-        />
-        <div className="absolute bottom-8 left-8 w-48 z-10">
-          <img 
-            src={LOGO_URL} 
-            alt="EOS Logo" 
-            className="w-full h-auto drop-shadow-md" 
-            crossOrigin="anonymous"
+    <main style={{ fontFamily: 'Inter, Arial, sans-serif', background: '#f4f4f5', minHeight: '100vh', padding: 24 }}>
+      <div style={{ maxWidth: 1100, margin: '0 auto', display: 'grid', gap: 16 }}>
+        <header style={{ ...card, background: '#18181b', color: '#fafafa' }}>
+          <h1 style={{ margin: 0 }}>Conversor BPP → MPR (BHX50)</h1>
+          <p style={{ margin: '8px 0 0 0' }}>Esta app es interactiva: se actualiza en vivo al pegar o cargar un BPP.</p>
+        </header>
+
+        <section style={{ ...card, background: '#eff6ff', borderColor: '#93c5fd' }}>
+          <h2 style={{ marginTop: 0 }}>¿Dónde probarla?</h2>
+          <ol style={{ marginBottom: 0 }}>
+            <li>En la carpeta del proyecto: <code>npm install</code></li>
+            <li>Ejecutar: <code>npm run dev</code></li>
+            <li>Abrir: <code>http://localhost:5173</code> (o la URL que te muestre Vite)</li>
+          </ol>
+        </section>
+
+        <section style={card}>
+          <h2>1) Entrada BPP</h2>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+            <input type="file" accept=".bpp,.txt" onChange={(e) => handleFile(e.target.files?.[0] ?? null)} />
+            <button onClick={() => { setRawBpp(EXAMPLE_BPP); setFileName('ejemplo.bpp'); }}>Cargar ejemplo</button>
+            <button onClick={() => setMappings(DEFAULT_MAPPINGS)}>Restaurar mappings</button>
+            <button onClick={() => { setRawBpp(''); setFileName(''); }}>Limpiar</button>
+          </div>
+          <p><strong>Archivo:</strong> {fileName || 'sin seleccionar'}</p>
+          <p><strong>Estado:</strong> {status}</p>
+          <textarea
+            value={rawBpp}
+            onChange={(e) => setRawBpp(e.target.value)}
+            rows={11}
+            style={{ width: '100%', fontFamily: 'monospace', borderRadius: 8, border: '1px solid #d4d4d8', padding: 12 }}
+            placeholder="Pegá aquí el contenido .bpp"
           />
-        </div>
+        </section>
+
+        <section style={{ ...card, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <div>
+            <h2>2) Resultado parser/normalización</h2>
+            <p><strong>Panel:</strong> X={parsed.panel.x} | Y={parsed.panel.y} | Z={parsed.panel.z}</p>
+            <p><strong>Operaciones:</strong> {parsed.operations.length}</p>
+            <ul>
+              {parsed.operations.map((op) => (
+                <li key={op.id}>
+                  <strong>{op.type}</strong> — {Object.keys(op.params).length > 0 ? Object.keys(op.params).join(', ') : 'sin parámetros'}
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div>
+            <h2>3) Diccionario BHX50</h2>
+            {(Object.keys(mappings) as Array<Exclude<OperationType, 'Unknown'>>).map((key) => (
+              <label key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 8 }}>
+                <span style={{ width: 60 }}>{key}</span>
+                <input
+                  value={mappings[key]}
+                  onChange={(e) => setMappings((prev) => ({ ...prev, [key]: e.target.value }))}
+                  style={{ flex: 1, border: '1px solid #d4d4d8', borderRadius: 6, padding: '4px 8px' }}
+                />
+              </label>
+            ))}
+          </div>
+        </section>
+
+        <section style={card}>
+          <h2>4) Preview y exportación .mpr</h2>
+          <button
+            onClick={exportMpr}
+            disabled={!rawBpp.trim()}
+            style={{
+              padding: '8px 14px',
+              borderRadius: 8,
+              border: 'none',
+              background: !rawBpp.trim() ? '#9ca3af' : '#2563eb',
+              color: '#fff',
+              cursor: !rawBpp.trim() ? 'not-allowed' : 'pointer'
+            }}
+          >
+            Exportar .mpr
+          </button>
+          <pre style={{ marginTop: 12, background: '#09090b', color: '#f4f4f5', padding: 12, borderRadius: 10, overflowX: 'auto' }}>{generatedMpr}</pre>
+        </section>
       </div>
-      <Sidebar 
-        config={config} 
-        setConfig={setConfig} 
-        updateConfig={updateConfig}
-        quoteData={quoteData}
-        activeLampType={activeLampType} 
-        setActiveLampType={setActiveLampType}
-        onDownloadPDF={() => {}} // Reference implementation already provided
-        onExport3D={handleExport3D}
-        onProductDetail={setSelectedProduct}
-        logoUrl={LOGO_URL}
-        onUndo={handleUndo}
-        canUndo={history.length > 0}
-        onToggleEnv={toggleEnvironment}
-        deleteMode={deleteMode}
-        setDeleteMode={setDeleteMode}
-        onEnvTypeChange={handleEnvironmentTypeChange}
-        onRotateObject={rotateObject}
-      />
-      <ProductModal productType={selectedProduct} onClose={() => setSelectedProduct(null)} />
-    </div>
+    </main>
   );
 };
 
