@@ -1,20 +1,42 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Conversor BPP a MPR para BHX50 (MVP funcional)
 
-# Run and deploy your AI Studio app
+MVP web para convertir programas de mecanizado `.bpp` a un `.mpr` preliminar para BHX50.
 
-This contains everything you need to run your app locally.
+## ¿Dónde probar la app?
 
-View your app in AI Studio: https://ai.studio/apps/drive/1uIrHJmBi0BvxrD0T8I47sGOSc3J2Zol6
+En local:
 
-## Run Locally
+```bash
+npm install
+npm run dev
+```
 
-**Prerequisites:**  Node.js
+Luego abrí en navegador la URL que imprime Vite (normalmente `http://localhost:5173`).
 
+## Flujo interactivo
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+1. Cargar archivo `.bpp` o usar ejemplo.
+2. Editar/pegar contenido BPP.
+3. Ver parser en vivo (sin botón de procesar).
+4. Ajustar diccionario de equivalencias operación -> macro BHX50.
+5. Previsualizar y exportar `.mpr`.
+
+## Operaciones detectadas (inspirado en BppLib)
+
+- `Bv`
+- `Bh`
+- `Bg`
+- `CutX`
+- `CutY`
+- `Rout`
+- `Pock`
+
+## Build
+
+```bash
+npm run build
+```
+
+## Nota
+
+El writer de `.mpr` es simple para MVP. La sintaxis final debe validarse con piezas reales en BHX50/woodWOP.
