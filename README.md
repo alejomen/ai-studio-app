@@ -1,20 +1,29 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Conversor BPP a BHX50
 
-# Run and deploy your AI Studio app
+Aplicación web (React + Vite) para:
 
-This contains everything you need to run your app locally.
+- importar archivos de mecanizado `.bpp`,
+- visualizar operaciones detectadas,
+- ver una planta en modo vectorial (2D) basada en coordenadas X/Y,
+- convertirlas a un formato de salida compatible con BHX50,
+- y descargar el resultado como `.bhx`.
 
-View your app in AI Studio: https://ai.studio/apps/drive/1uIrHJmBi0BvxrD0T8I47sGOSc3J2Zol6
+> Nota: la conversión implementada es una base configurable. Si compartes ejemplos reales de entrada/salida de tu BHX50, se puede ajustar el mapeo exacto de comandos.
 
-## Run Locally
+## Ejecutar localmente
 
-**Prerequisites:**  Node.js
+1. Instala dependencias:
+   ```bash
+   npm install
+   ```
+2. Inicia el servidor de desarrollo:
+   ```bash
+   npm run dev
+   ```
+3. Abre `http://localhost:5173`.
 
+## Build de producción
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+```bash
+npm run build
+```
